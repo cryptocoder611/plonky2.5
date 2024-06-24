@@ -150,15 +150,21 @@ impl<F: RicherField + Extendable<D>, const D: usize> CircuitBuilderP3Arithmetic<
 #[cfg(test)]
 mod tests {
 
+    use commit::MerkleTreeMmcs;
     use plonky2::field::goldilocks_field::GoldilocksField;
     use plonky2::field::types::Field;
+    use plonky2::field::types::Sample;
+    use plonky2::hash::hash_types::HashOut;
+    use plonky2::hash::hash_types::HashOutTarget;
     use plonky2::hash::poseidon::PoseidonHash;
     use plonky2::iop::witness::PartialWitness;
     use plonky2::iop::witness::WitnessWrite;
     use plonky2::plonk::circuit_data::CircuitConfig;
+    use plonky2::plonk::config::Hasher;
     use plonky2::plonk::config::PoseidonGoldilocksConfig;
     use rand::Rng;
 
+    use crate::common::poseidon2::poseidon2::Poseidon2Hash;
     use crate::p3::air::VerifierConstraintFolder;
     use crate::p3::extension::CircuitBuilderP3ExtArithmetic;
     use crate::p3::serde::proof::BinomialExtensionField;
@@ -266,6 +272,59 @@ mod tests {
         let is_verified = data.verify(proof);
         is_verified.as_ref().unwrap();
         assert!(is_verified.is_ok());
+    }
+
+    #[test]
+    fn test_p3_poseidon2() {
+        const D: usize = 2;
+        type C = PoseidonGoldilocksConfig;
+        type F = GoldilocksField;
+        type H = Poseidon2Hash;
+
+        for log_n in 10..15 {
+            let size = 1 << log_n;
+            println!("size: {}", size);
+            let config = CircuitConfig::standard_recursion_config();
+            let mut builder = CircuitBuilder::<F, D>::new(config);
+
+            let mut left = Vec::new();
+            let mut right = Vec::new();
+            let mut output = Vec::new();
+            for _ in 0..size {
+                let l = builder.add_virtual_hash();
+                let r = builder.add_virtual_hash();
+                let o = HashOutTarget::from(MerkleTreeMmcs::compress::<H, _, D>(
+                    [l.elements, r.elements],
+                    &mut builder,
+                ));
+                left.push(l);
+                right.push(r);
+                output.push(o);
+            }
+
+            let data = builder.build::<C>();
+
+            let mut pw = PartialWitness::new();
+            for i in 0..size {
+                let l_val = HashOut::rand();
+                let r_val = HashOut::rand();
+                let o_val = H::two_to_one(l_val, r_val);
+
+                pw.set_hash_target(left[i], l_val);
+                pw.set_hash_target(right[i], r_val);
+                pw.set_hash_target(output[i], o_val);
+            }
+
+            let start_time = std::time::Instant::now();
+            let proof = data.prove(pw).unwrap();
+            let duration_ms = start_time.elapsed().as_secs_f64();
+            println!("demo proved in {}s", duration_ms);
+            // Serialize proof to be bytes.
+            let proof_bytes = bincode::serialize(&proof.proof).unwrap();
+            println!("proof size: {:?}", proof_bytes.len());
+
+            assert!(data.verify(proof).is_ok());
+        }
     }
 
     #[test]
